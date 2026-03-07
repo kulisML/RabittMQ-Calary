@@ -1,0 +1,146 @@
+services:
+  # === PostgreSQL ===
+  postgres:
+    image: postgres:16-alpine
+    container_name: edulab-postgres
+    env_file: .env
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U edulab" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # === Redis ===
+  redis:
+    image: redis:7-alpine
+    container_name: edulab-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # === RabbitMQ ===
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: edulab-rabbitmq
+    env_file: .env
+    ports:
+      - "5672:5672" # AMQP
+      - "15672:15672" # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: [ "CMD", "rabbitmqctl", "status" ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+  # === Backend (FastAPI) ===
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: edulab-backend
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # === Celery Worker (Container Manager) ===
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: edulab-worker
+    env_file: .env
+    volumes:
+      - ./backend:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: celery -A app.worker.celery_app worker --loglevel=info --queues=container.start,container.stop
+
+  # === Container Gateway (Node.js WebSocket proxy) ===
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    container_name: edulab-gateway
+    env_file: .env
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./gateway:/app
+      - /app/node_modules
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    command: node src/index.js
+
+  # === Frontend (Next.js) ===
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: edulab-frontend
+    env_file: .env
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+      - gateway
+    command: npm run dev
+
+  # === Observer Service (Этап 2) ===
+  observer:
+    build:
+      context: ./observer
+      dockerfile: Dockerfile
+    container_name: edulab-observer
+    env_file: .env
+    volumes:
+      - ./observer:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+
+
