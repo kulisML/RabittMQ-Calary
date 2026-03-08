@@ -11,10 +11,12 @@ from app.config import settings
 from app.models.lab import Lab
 from app.models.result import ContainerSession, LabResult
 from app.models.user import User
-from app.services import rabbitmq_service
 
 # Redis client (initialized on app startup)
 redis_client: aioredis.Redis | None = None
+
+# Celery app for sending tasks (synchronous — safe to use from async context)
+from app.worker.celery_app import celery_app
 
 
 async def init_redis() -> None:
@@ -51,7 +53,7 @@ async def get_student_labs(db: AsyncSession, student: User) -> list[dict]:
 
         if submission:
             status = "submitted"
-        elif container_data:
+        elif container_data and container_data.get("status") in ("running", "starting"):
             status = "in_progress"
         else:
             status = "not_started"
@@ -76,25 +78,25 @@ async def get_lab_detail(db: AsyncSession, lab_id: int) -> Lab | None:
 async def open_lab(
     db: AsyncSession, student: User, lab: Lab
 ) -> dict:
-    """Open a lab — publish container.start to RabbitMQ (ТЗ §3.2).
+    """Open a lab — send Celery task to start container (ТЗ §3.2).
 
     1. Check if container already exists in Redis
-    2. If not — publish container.start event
-    3. Wait for container info in Redis (poll)
+    2. If not — send Celery task container.start
+    3. Write "starting" to Redis immediately
     4. Generate WS ticket
     5. Return connection info
     """
     container_key = f"container:{student.id}:{lab.id}"
 
-    # Check if container already running
+    # Check if container already running or starting
     existing = await redis_client.hgetall(container_key) if redis_client else {}
-    if existing and existing.get("status") == "running":
+    if existing and existing.get("status") in ("running", "starting"):
         # Container already exists — generate new ticket and return
         ws_ticket = await _generate_ws_ticket(student.id, lab.id)
         return {
-            "container_id": existing["container_id"],
-            "port": int(existing["port"]),
-            "status": "running",
+            "container_id": existing.get("container_id", "pending"),
+            "port": int(existing.get("port", "0")),
+            "status": existing.get("status", "starting"),
             "ws_ticket": ws_ticket,
         }
 
@@ -107,19 +109,28 @@ async def open_lab(
     }
     image = image_map.get(lab.language, settings.DEFAULT_PYTHON_IMAGE)
 
-    # Publish container.start to RabbitMQ (ТЗ §2.2)
-    await rabbitmq_service.publish(
-        exchange_name="edulab.direct",
-        routing_key="container.start",
-        message={
+    # Send Celery task to start container (CRITICAL: use send_task, NOT raw publish)
+    celery_app.send_task(
+        "app.worker.tasks.start_container",
+        kwargs={
             "student_id": student.id,
             "lab_id": lab.id,
             "language": lab.language,
             "image": image,
-            "template_code": lab.template_code,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "template_code": lab.template_code or "",
         },
+        queue="container.start",
     )
+
+    # Write "starting" status to Redis IMMEDIATELY
+    if redis_client:
+        await redis_client.hset(container_key, mapping={
+            "container_id": "pending",
+            "port": "0",
+            "status": "starting",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        })
+        await redis_client.expire(container_key, 600)  # 10 min TTL
 
     # Record session in DB
     session = ContainerSession(
@@ -145,7 +156,7 @@ async def open_lab(
 
 
 async def _generate_ws_ticket(student_id: int, lab_id: int) -> str:
-    """Generate a one-time WebSocket ticket (TTL 30 sec, stored in Redis)."""
+    """Generate a one-time WebSocket ticket (TTL 120 sec, stored in Redis)."""
     ticket = secrets.token_urlsafe(32)
     ticket_key = f"ws_ticket:{ticket}"
 
@@ -154,7 +165,7 @@ async def _generate_ws_ticket(student_id: int, lab_id: int) -> str:
             "student_id": str(student_id),
             "lab_id": str(lab_id),
         })
-        await redis_client.expire(ticket_key, 30)  # 30 seconds TTL
+        await redis_client.expire(ticket_key, 120)  # 120 seconds TTL
 
     return ticket
 

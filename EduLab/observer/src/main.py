@@ -5,10 +5,11 @@ and publishes them to container.events queue in RabbitMQ.
 
 Events monitored (ТЗ §4.3):
 - container.start   → студент открыл лабу       → 🟢 активен
-- container.stop    → закрыл браузер             → 🔴 офлайн
+- container.stop    → закрыл браузер             → 🔴 офлайн (удаляется)
 - container.exec    → команда в терминале        → ⚡ мигание
 - container.oom     → превышен лимит памяти      → ⚠️ предупреждение
-- container.die     → контейнер упал             → 🔴 + ошибка
+- container.die     → контейнер упал             → 🔴 + ошибка (удаляется)
+- container.destroy → контейнер удален           → 🔴 (удаляется)
 """
 import asyncio
 import json
@@ -71,13 +72,37 @@ async def update_redis_status(redis_client, student_id: int, lab_id: int, status
     if extra:
         await redis_client.hset(key, mapping=extra)
 
+async def sync_redis_with_docker(redis_client):
+    """Cleanup Redis keys that correspond to non-existent or stopped containers."""
+    try:
+        keys = []
+        async for key in redis_client.scan_iter("container:*"):
+            keys.append(key)
+        for key in keys:
+            data = await redis_client.hgetall(key)
+            container_id = data.get("container_id")
+            if not container_id or container_id == "pending":
+                continue
+            
+            # Check docker API
+            try:
+                c = docker_client.containers.get(container_id)
+                if c.status not in ("running", "restarting"):
+                    await redis_client.delete(key)
+                    logger.info(f"Sync: Deleted stopped container key {key}")
+            except docker.errors.NotFound:
+                await redis_client.delete(key)
+                logger.info(f"Sync: Deleted missing container key {key}")
+    except Exception as exc:
+        logger.error(f"Failed to sync Redis with Docker: {exc}")
+
 
 def watch_docker_events():
     """Generator: yields Docker events for EduLab containers (blocking)."""
     logger.info("Watching Docker events...")
     event_filters = {
         "type": ["container"],
-        "event": ["start", "stop", "die", "oom", "exec_start"],
+        "event": ["start", "stop", "die", "oom", "exec_start", "destroy", "kill"],
     }
     for event in docker_client.events(decode=True, filters=event_filters):
         container_name = event.get("Actor", {}).get("Attributes", {}).get("name", "")
@@ -89,6 +114,8 @@ def watch_docker_events():
             "start": "container.start",
             "stop": "container.stop",
             "die": "container.die",
+            "destroy": "container.destroy",
+            "kill": "container.kill",
             "oom": "container.oom",
             "exec_start": "container.exec",
         }
@@ -140,9 +167,14 @@ async def main():
         "container.start": "running",
         "container.stop": "stopped",
         "container.die": "crashed",
+        "container.destroy": "deleted",
+        "container.kill": "killed",
         "container.oom": "oom_killed",
         "container.exec": "running",  # exec doesn't change status
     }
+
+    # Perform initial sync
+    await sync_redis_with_docker(redis_client)
 
     logger.info("Observer Service ready. Listening for Docker events...")
 
@@ -167,9 +199,13 @@ async def handle_event(channel, redis_client, event: dict, status_map: dict):
         lab_id = event["lab_id"]
         event_type = event["event_type"]
 
-        # Update Redis status
+        # Update Redis status or remove key
         new_status = status_map.get(event_type, "unknown")
-        if event_type != "container.exec":  # exec doesn't change status
+        key = f"container:{student_id}:{lab_id}"
+        
+        if event_type in ("container.stop", "container.die", "container.destroy", "container.kill"):
+            await redis_client.delete(key)
+        elif event_type != "container.exec":  # exec doesn't change status
             await update_redis_status(redis_client, student_id, lab_id, new_status)
 
         # Publish to RabbitMQ

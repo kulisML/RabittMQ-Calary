@@ -37,10 +37,10 @@ async function validateTicket(ticket) {
 async function getContainerInfo(studentId, labId) {
     const key = `container:${studentId}:${labId}`;
     const data = await redis.hgetall(key);
-    if (!data || !data.container_id) return null;
+    if (!data || !data.status) return null;
     return {
-        containerId: data.container_id,
-        port: parseInt(data.port),
+        containerId: data.container_id || '',
+        port: data.port ? parseInt(data.port) : 0,
         status: data.status,
     };
 }

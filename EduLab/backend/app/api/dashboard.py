@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.dependencies import get_current_user
 from app.database import get_db
 from app.models.user import User, Group, UserRole
-from app.services.lab_service import redis_client
+from app.services import lab_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -50,9 +50,9 @@ async def get_group_students(
 
     # Get online set from Redis (ТЗ §9.2)
     online_ids = set()
-    if redis_client:
+    if lab_service.redis_client:
         try:
-            online_ids = await redis_client.smembers(f"online:{group_id}")
+            online_ids = await lab_service.redis_client.smembers(f"online:{group_id}")
         except Exception:
             pass
 
@@ -60,15 +60,15 @@ async def get_group_students(
     for s in students:
         # Check if student has active container
         active_container = None
-        if redis_client:
+        if lab_service.redis_client:
             try:
                 # Scan for any active container for this student
                 keys = []
-                async for key in redis_client.scan_iter(f"container:{s.id}:*"):
+                async for key in lab_service.redis_client.scan_iter(f"container:{s.id}:*"):
                     keys.append(key)
                 for key in keys:
-                    data = await redis_client.hgetall(key)
-                    if data and data.get("status") == "running":
+                    data = await lab_service.redis_client.hgetall(key)
+                    if data and data.get("status") in ("running", "starting"):
                         lab_id = key.split(":")[-1]
                         active_container = {
                             "lab_id": int(lab_id),
@@ -102,14 +102,14 @@ async def get_all_containers(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Только для преподавателей")
 
     containers = []
-    if redis_client:
+    if lab_service.redis_client:
         try:
-            async for key in redis_client.scan_iter("container:*"):
+            async for key in lab_service.redis_client.scan_iter("container:*"):
                 parts = key.split(":")
                 if len(parts) != 3:
                     continue
-                data = await redis_client.hgetall(key)
-                if data and data.get("status") == "running":
+                data = await lab_service.redis_client.hgetall(key)
+                if data and data.get("status") in ("running", "starting"):
                     containers.append({
                         "student_id": int(parts[1]),
                         "lab_id": int(parts[2]),
@@ -142,12 +142,12 @@ async def get_student_stats(
 
     # Get stats from Redis (ТЗ §9.2)
     lab_stats = []
-    if redis_client:
+    if lab_service.redis_client:
         try:
-            async for key in redis_client.scan_iter(f"stats:{student_id}:*"):
+            async for key in lab_service.redis_client.scan_iter(f"stats:{student_id}:*"):
                 parts = key.split(":")
                 lab_id = int(parts[2])
-                data = await redis_client.hgetall(key)
+                data = await lab_service.redis_client.hgetall(key)
                 lab_stats.append({
                     "lab_id": lab_id,
                     "runs_count": int(data.get("runs_count", 0)),

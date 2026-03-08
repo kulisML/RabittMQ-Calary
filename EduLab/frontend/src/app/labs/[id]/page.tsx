@@ -36,6 +36,10 @@ export default function WorkspacePage() {
     const editorWsRef = useRef<WebSocket | null>(null);
     const terminalWsRef = useRef<WebSocket | null>(null);
     const xtermRef = useRef<any>(null);
+    // Buffer for terminal data arriving before xterm is ready
+    const terminalBufferRef = useRef<Uint8Array[]>([]);
+    // Track initialization to prevent double-init (React StrictMode)
+    const initRef = useRef(false);
 
     // Load lab data and open container
     useEffect(() => {
@@ -43,6 +47,10 @@ export default function WorkspacePage() {
             router.replace('/login');
             return;
         }
+
+        // Prevent double initialization in React StrictMode
+        if (initRef.current) return;
+        initRef.current = true;
 
         async function init() {
             try {
@@ -59,14 +67,38 @@ export default function WorkspacePage() {
                 setStatus('connecting');
                 const openResult = await openLab(labId);
 
-                // Wait a bit for container to start
-                await new Promise(r => setTimeout(r, 3000));
+                // Get second ticket for terminal (won't re-publish container.start
+                // because Redis already has "starting" status)
+                const openResult2 = await openLab(labId);
 
-                // Connect WebSockets (ТЗ §8.3)
-                // Editor WS
-                const editorWs = connectEditor(
+                // Connect Terminal WS
+                const termWs = connectTerminal(
                     user.id, labId, openResult.ws_ticket,
-                    (filename, content) => {
+                    (data) => {
+                        // Buffer data until xterm is ready
+                        if (xtermRef.current) {
+                            if (data instanceof ArrayBuffer) {
+                                xtermRef.current.write(new Uint8Array(data));
+                            } else {
+                                xtermRef.current.write(data);
+                            }
+                        } else {
+                            // xterm not ready yet — buffer the data
+                            if (data instanceof ArrayBuffer) {
+                                terminalBufferRef.current.push(new Uint8Array(data));
+                            } else {
+                                terminalBufferRef.current.push(new TextEncoder().encode(data));
+                            }
+                        }
+                    },
+                    () => console.log('[Terminal WS] Closed'),
+                );
+                terminalWsRef.current = termWs;
+
+                // Connect Editor WS
+                const editorWs = connectEditor(
+                    user.id, labId, openResult2.ws_ticket,
+                    (filename: string, content: string) => {
                         if (filename === 'main.py' && content) {
                             setCode(content);
                         }
@@ -74,23 +106,6 @@ export default function WorkspacePage() {
                     () => console.log('[Editor WS] Closed'),
                 );
                 editorWsRef.current = editorWs;
-
-                // Terminal WS — needs a second ticket
-                const openResult2 = await openLab(labId);
-                const termWs = connectTerminal(
-                    user.id, labId, openResult2.ws_ticket,
-                    (data) => {
-                        if (xtermRef.current) {
-                            if (data instanceof ArrayBuffer) {
-                                xtermRef.current.write(new Uint8Array(data));
-                            } else {
-                                xtermRef.current.write(data);
-                            }
-                        }
-                    },
-                    () => console.log('[Terminal WS] Closed'),
-                );
-                terminalWsRef.current = termWs;
 
                 setStatus('ready');
             } catch (err: any) {
@@ -141,6 +156,12 @@ export default function WorkspacePage() {
             });
 
             xtermRef.current = term;
+
+            // Flush buffered data that arrived before xterm was ready
+            for (const chunk of terminalBufferRef.current) {
+                term.write(chunk);
+            }
+            terminalBufferRef.current = [];
 
             // Resize on window resize
             window.addEventListener('resize', () => fitAddon.fit());

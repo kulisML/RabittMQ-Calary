@@ -43,9 +43,17 @@ async function handleEditorConnection(ws, studentId, labId, ticket) {
         return;
     }
 
-    const container = await getContainerInfo(studentId, labId);
+    // Poll Redis until container is running (max 15s)
+    let container = null;
+    const startTime = Date.now();
+    while (Date.now() - startTime < 15000) {
+        container = await getContainerInfo(studentId, labId);
+        if (container && container.status === 'running') break;
+        await new Promise(r => setTimeout(r, 1000));
+    }
+
     if (!container || container.status !== 'running') {
-        ws.close(4002, 'Container not running');
+        ws.close(4002, 'Container not running (timeout)');
         return;
     }
 

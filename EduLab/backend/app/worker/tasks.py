@@ -58,18 +58,10 @@ def start_container(self, student_id: int, lab_id: int, language: str,
             # Resource limits (ТЗ §5.1)
             nano_cpus=int(settings.CONTAINER_CPU_LIMIT * 1e9),  # 50% of 1 core
             mem_limit=settings.CONTAINER_MEM_LIMIT,              # 256MB
-            # Storage limit via tmpfs
-            storage_opt=None,
-            # Network disabled (ТЗ §5.1)
-            network_mode="none",
-            # Non-root user (ТЗ §5.1)
-            user="1000:1000",
             # Volume mount (ТЗ §5.2)
             volumes={
                 volume_name: {"bind": "/workspace", "mode": "rw"},
             },
-            # Read-only root filesystem except /workspace (ТЗ §5.2)
-            read_only=False,
             # Working directory
             working_dir="/workspace",
             # Auto-remove on stop — NO, we keep volumes (ТЗ §3.5)
@@ -79,8 +71,8 @@ def start_container(self, student_id: int, lab_id: int, language: str,
                 "STUDENT_ID": str(student_id),
                 "LAB_ID": str(lab_id),
             },
-            # Publish ttyd port
-            ports={"7681/tcp": None},  # Random host port
+            # Publish ttyd port — maps 7681 to random host port
+            ports={"7681/tcp": None},
         )
 
         # Get assigned port
