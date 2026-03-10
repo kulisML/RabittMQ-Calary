@@ -41,12 +41,19 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
 @router.post("/logout")
 async def logout(user: User = Depends(get_current_user)):
     """POST /auth/logout — завершение сессии (ТЗ §8.1)."""
-    # Remove from online set
+    # Remove from online individual key
     if user.group_id and lab_service.redis_client:
-        await lab_service.redis_client.srem(f"online:{user.group_id}", str(user.id))
+        await lab_service.redis_client.delete(f"online_user:{user.group_id}:{user.id}")
 
     return {"detail": "Сессия завершена"}
 
+
+@router.post("/ping")
+async def ping(user: User = Depends(get_current_user)):
+    """POST /auth/ping — поддержание онлайн-статуса (ТЗ §8.1)."""
+    if user.group_id and lab_service.redis_client:
+        await lab_service.redis_client.setex(f"online_user:{user.group_id}:{user.id}", 120, "1")
+    return {"detail": "pong"}
 
 @router.get("/me", response_model=UserOut)
 async def get_me(user: User = Depends(get_current_user)):

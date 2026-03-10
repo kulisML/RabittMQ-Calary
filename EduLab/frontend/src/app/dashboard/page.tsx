@@ -136,7 +136,7 @@ export default function DashboardPage() {
                                         className="btn btn-ghost"
                                         style={{ marginTop: 8, padding: '4px 10px', fontSize: 12 }}
                                         onClick={() => window.open(
-                                            `ws://localhost:3001/ws/observe/${c.student_id}/${c.lab_id}`,
+                                            `/observe/${c.student_id}/${c.lab_id}`,
                                             '_blank',
                                         )}
                                     >

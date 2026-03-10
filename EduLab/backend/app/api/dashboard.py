@@ -48,11 +48,21 @@ async def get_group_students(
     )
     students = result.scalars().all()
 
-    # Get online set from Redis (ТЗ §9.2)
+    # Get online keys from Redis
     online_ids = set()
     if lab_service.redis_client:
         try:
-            online_ids = await lab_service.redis_client.smembers(f"online:{group_id}")
+            cursor = 0
+            while True:
+                cursor, keys = await lab_service.redis_client.scan(cursor, match=f"online_user:{group_id}:*", count=100)
+                for key in keys:
+                    try:
+                        user_id = int(key.decode().split(":")[-1])
+                        online_ids.add(user_id)
+                    except (ValueError, IndexError, AttributeError):
+                        pass
+                if cursor == 0:
+                    break
         except Exception:
             pass
 
@@ -66,16 +76,33 @@ async def get_group_students(
                 keys = []
                 async for key in lab_service.redis_client.scan_iter(f"container:{s.id}:*"):
                     keys.append(key)
+
+                found_containers = []
                 for key in keys:
                     data = await lab_service.redis_client.hgetall(key)
-                    if data and data.get("status") in ("running", "starting"):
-                        lab_id = key.split(":")[-1]
-                        active_container = {
+                    if data and data.get(b"status", data.get("status")) in (b"running", b"starting", "running", "starting"):
+                        # Handle bytes vs str for key
+                        if isinstance(key, bytes):
+                            lab_id = key.decode().split(":")[-1]
+                        else:
+                            lab_id = key.split(":")[-1]
+
+                        # Handle bytes vs str for map values
+                        c_id = data.get(b"container_id", data.get("container_id", ""))
+                        started = data.get(b"started_at", data.get("started_at", ""))
+                        if isinstance(c_id, bytes): c_id = c_id.decode()
+                        if isinstance(started, bytes): started = started.decode()
+
+                        found_containers.append({
                             "lab_id": int(lab_id),
-                            "container_id": data.get("container_id", ""),
-                            "started_at": data.get("started_at", ""),
-                        }
-                        break
+                            "container_id": c_id,
+                            "started_at": started,
+                        })
+
+                if found_containers:
+                    # Sort descending by started_at so newest is picked
+                    found_containers.sort(key=lambda x: x["started_at"], reverse=True)
+                    active_container = found_containers[0]
             except Exception:
                 pass
 
@@ -83,7 +110,7 @@ async def get_group_students(
             "id": s.id,
             "name": s.name,
             "email": s.email,
-            "is_online": str(s.id) in online_ids,
+            "is_online": getattr(s, 'id', None) in online_ids,
             "active_container": active_container,
         })
 

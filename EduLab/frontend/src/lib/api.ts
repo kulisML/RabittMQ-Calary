@@ -61,6 +61,7 @@ export async function login(email: string, password: string) {
         body: JSON.stringify({ email, password }),
     });
     setToken(data.access_token);
+    pingNow();
     return data;
 }
 
@@ -115,4 +116,23 @@ export async function getAllContainers() {
 
 export async function getStudentStats(studentId: number) {
     return request(`/dashboard/student/${studentId}/stats`);
+}
+// === Online Status Keep-Alive ===
+let pingInterval: ReturnType<typeof setInterval> | null = null;
+
+export function pingNow() {
+    if (typeof window !== 'undefined' && isAuthenticated()) {
+        request('/auth/ping', { method: 'POST' }).catch((err) => {
+            console.debug('[Online] Ping failed', err);
+        });
+    }
+}
+
+if (typeof window !== 'undefined') {
+    // Initial ping
+    setTimeout(pingNow, 1000); // 1s delay to let everything hydrate
+    // Setup interval
+    if (!pingInterval) {
+        pingInterval = setInterval(pingNow, 60000); // every 60 seconds
+    }
 }

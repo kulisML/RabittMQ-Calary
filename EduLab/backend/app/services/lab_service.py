@@ -145,7 +145,7 @@ async def open_lab(
 
     # Update online set (ТЗ §9.2)
     if student.group_id and redis_client:
-        await redis_client.sadd(f"online:{student.group_id}", str(student.id))
+        await redis_client.setex(f"online_user:{student.group_id}:{student.id}", 120, "1")
 
     return {
         "container_id": "pending",

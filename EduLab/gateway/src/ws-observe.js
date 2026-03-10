@@ -36,44 +36,90 @@ async function handleObserveConnection(ws, studentId, labId, token) {
 
     const container = await getContainerInfo(studentId, labId);
     if (!container || container.status !== 'running') {
+        console.error(`[Observe] Rejecting teacher: student=${studentId} lab=${labId} - container not running or missing in Redis.`);
         ws.close(4002, 'Container not running');
         return;
     }
 
-    // Connect to ttyd in read-only mode
+    // Connect to ttyd in read-only mode using internal network
     const ttydUrl = `ws://host.docker.internal:${container.port}/ws`;
     let upstream;
 
     try {
-        upstream = new WebSocket(ttydUrl);
+        upstream = new WebSocket(ttydUrl, ['tty']);
     } catch (err) {
         console.error(`[Observe] Failed to connect to ttyd:`, err.message);
         ws.close(4003, 'Cannot connect to container');
         return;
     }
 
-    upstream.on('open', () => {
-        console.log(`[Observe] Teacher connected: student=${studentId} lab=${labId}`);
+    // Attach client-side event listeners FIRST to catch early disconnects
+    let isClientClosed = false;
+
+    ws.on('close', () => {
+        console.log(`[Observe] Teacher disconnected: student=${studentId} lab=${labId}`);
+        isClientClosed = true;
+        if (upstream && upstream.readyState === WebSocket.OPEN) {
+            upstream.close();
+        }
     });
+
+    ws.on('error', (err) => {
+        console.error(`[Observe] Client error: ${err.message}`);
+    });
+
+    // Wait for upstream to actually open
+    await new Promise((resolve, reject) => {
+        upstream.on('open', () => {
+            if (isClientClosed) {
+                // The client disconnected while we were connecting to ttyd
+                console.log(`[Observe] Teacher disconnected early. Closing ttyd: student=${studentId} lab=${labId}`);
+                upstream.close();
+                resolve();
+                return;
+            }
+
+            console.log(`[Observe] Teacher connected: student=${studentId} lab=${labId}`);
+            // Send initial empty AuthToken so ttyd starts sending data
+            upstream.send(JSON.stringify({ AuthToken: '' }));
+
+            // Send Window Size message to allocate the PTY and start bash
+            upstream.send('1' + JSON.stringify({ columns: 120, rows: 30 }));
+            resolve();
+        });
+        upstream.on('error', (err) => {
+            reject(err);
+        });
+        setTimeout(() => reject(new Error('ttyd connection timeout')), 5000);
+    }).catch((err) => {
+        if (!isClientClosed) {
+            console.error(`[Observe] ttyd connection failed:`, err.message);
+            ws.close(4003, 'Cannot connect to container terminal');
+        }
+    });
+
+    if (isClientClosed || upstream.readyState !== WebSocket.OPEN) return;
 
     // READ ONLY: container output → teacher browser
     upstream.on('message', (data) => {
         if (ws.readyState === WebSocket.OPEN) {
-            ws.send(data);
+            // ws library returns Buffer by default. Convert to string
+            const str = data.toString('utf8');
+            console.log(`[Observe DEBUG] ttyd -> Browser: length=${str.length}, prefix='${str[0]}', preview='${str.substring(1, 50).replace(/\n/g, '\\n')}'`);
+            if (str.length > 0 && str[0] === '0') {
+                const payload = str.slice(1);
+                console.log(`[Observe DEBUG] Sending to teacher: length=${payload.length}`);
+
+                // IMPORTANT: In gateway/ws-terminal.js, we also just send strings.
+                // Wait, ttyd uses text frames, but let's see what ws.send does
+                ws.send(payload); // Send actual content to browser
+            }
         }
     });
 
     // BLOCK: teacher input is NOT forwarded to container
     ws.on('message', () => {
         // Intentionally empty — read-only mode
-    });
-
-    ws.on('close', () => {
-        console.log(`[Observe] Teacher disconnected: student=${studentId} lab=${labId}`);
-        if (upstream.readyState === WebSocket.OPEN) {
-            upstream.close();
-        }
-        // Do NOT publish container.stop — teacher closing doesn't stop container
     });
 
     upstream.on('close', () => {
@@ -84,10 +130,6 @@ async function handleObserveConnection(ws, studentId, labId, token) {
 
     upstream.on('error', (err) => {
         console.error(`[Observe] Upstream error: ${err.message}`);
-    });
-
-    ws.on('error', (err) => {
-        console.error(`[Observe] Client error: ${err.message}`);
     });
 }
 

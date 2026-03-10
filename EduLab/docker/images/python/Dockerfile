@@ -4,9 +4,9 @@
 
 FROM python:3.11-slim
 
-# Install ttyd for WebSocket terminal access (ТЗ §7)
+# Install ttyd for WebSocket terminal access and tmux for shared sessions (ТЗ §7)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+    curl tmux \
     && curl -sL https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.x86_64 \
     -o /usr/local/bin/ttyd \
     && chmod +x /usr/local/bin/ttyd \
@@ -38,5 +38,5 @@ WORKDIR /workspace
 # Expose ttyd port
 EXPOSE 7681
 
-# Start ttyd (ТЗ §7: WebSocket-обёртка над bash)
-ENTRYPOINT ["ttyd", "--writable", "--port", "7681", "bash"]
+# Start ttyd attached to a tmux session (shared between student and teacher)
+ENTRYPOINT ["ttyd", "--writable", "--port", "7681", "tmux", "new", "-A", "-s", "shared", "bash"]
