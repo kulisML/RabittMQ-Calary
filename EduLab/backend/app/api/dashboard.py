@@ -20,6 +20,23 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
 
+@router.get("/groups")
+async def get_teacher_groups(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """GET /dashboard/groups — список всех доступных групп (ТЗ §8.4)."""
+    if user.role.value not in ("teacher", "admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Только для преподавателей")
+
+    result = await db.execute(select(Group))
+    groups = result.scalars().all()
+
+    return {
+        "groups": [{"id": g.id, "name": g.name, "year": g.year} for g in groups]
+    }
+
+
 @router.get("/groups/{group_id}")
 async def get_group_students(
     group_id: int,

@@ -87,9 +87,63 @@ export async function getLab(labId: number) {
     return request(`/labs/${labId}`);
 }
 
-export async function openLab(labId: number) {
-    return request(`/labs/${labId}/open`, { method: 'POST' });
+export async function getLabRooms(labId: number) {
+    return request(`/rooms/lab/${labId}`);
 }
+
+export async function createRoom(labId: number, name: string) {
+    return request('/rooms', {
+        method: 'POST',
+        body: JSON.stringify({ lab_id: labId, name }),
+    });
+}
+
+export async function openRoom(roomId: number) {
+    return request(`/rooms/${roomId}/open`, { method: 'POST' });
+}
+
+export async function pingRoom(roomId: number) {
+    return request(`/rooms/${roomId}/ping`, { method: 'POST' });
+}
+
+export function stopRoomBeacon(roomId: number) {
+    if (typeof window === 'undefined') return;
+    const token = getToken();
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    fetch(`${API_URL}/rooms/${roomId}/stop`, {
+        method: 'POST',
+        keepalive: true,
+        headers,
+    }).catch(console.error);
+}
+
+// === AI API ===
+export async function triggerAIAnalysis(roomId: number, labId: number, code: string) {
+    return request('/ai/analyze', {
+        method: 'POST',
+        body: JSON.stringify({ room_id: roomId, lab_id: labId, code }),
+    });
+}
+
+export async function getAIPlaques(roomId: number, labId: number) {
+    return request(`/ai/plaques/${roomId}/${labId}`);
+}
+
+// === Gamification API ===
+export async function getGamerProfile() {
+    return request('/gamification/me');
+}
+
+export async function grantAchievement(userId: number, achievementSlug: string) {
+    return request(`/gamification/internal/grant?user_id=${userId}&achievement_slug=${achievementSlug}`, {
+        method: 'POST',
+    });
+}
+
+
+
 
 export async function createLab(data: {
     title: string;
@@ -105,6 +159,10 @@ export async function createLab(data: {
 }
 
 // === Dashboard API (ТЗ §8.4, Этап 2) ===
+
+export async function getTeacherGroups() {
+    return request('/dashboard/groups');
+}
 
 export async function getGroupStudents(groupId: number) {
     return request(`/dashboard/groups/${groupId}`);

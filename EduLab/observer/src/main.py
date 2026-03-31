@@ -35,24 +35,25 @@ docker_client = docker.from_env()
 
 
 def parse_container_name(name: str) -> dict | None:
-    """Extract student_id and lab_id from container name 'edulab-{sid}-{lid}'."""
-    if not name.startswith("edulab-"):
+    """Extract room_id and lab_id from container name 'edulab-room-{rid}-{lid}'."""
+    if not name.startswith("edulab-room-"):
         return None
     parts = name.replace("/", "").split("-")
-    if len(parts) != 3:
+    if len(parts) != 4:
         return None
     try:
-        return {"student_id": int(parts[1]), "lab_id": int(parts[2])}
+        return {"room_id": int(parts[2]), "lab_id": int(parts[3])}
     except (ValueError, IndexError):
         return None
+
 
 
 async def publish_event(channel, event_data: dict):
     """Publish event to container.events via RabbitMQ topic exchange."""
     exchange = await channel.get_exchange("edulab.topic")
 
-    # Routing key: container.events.{student_id}
-    routing_key = f"container.events.{event_data.get('student_id', 'unknown')}"
+    # Routing key: container.events.{room_id}
+    routing_key = f"container.events.room.{event_data.get('room_id', 'unknown')}"
 
     await exchange.publish(
         aio_pika.Message(
@@ -62,12 +63,12 @@ async def publish_event(channel, event_data: dict):
         ),
         routing_key=routing_key,
     )
-    logger.info(f"Published event: {event_data['event_type']} for student={event_data.get('student_id')}")
+    logger.info(f"Published event: {event_data['event_type']} for room={event_data.get('room_id')}")
 
 
-async def update_redis_status(redis_client, student_id: int, lab_id: int, status: str, extra: dict = None):
-    """Update container status in Redis for dashboard (ТЗ §9.2)."""
-    key = f"container:{student_id}:{lab_id}"
+async def update_redis_status(redis_client, room_id: int, lab_id: int, status: str, extra: dict = None):
+    """Update container status in Redis for dashboard."""
+    key = f"container:room:{room_id}:{lab_id}"
     await redis_client.hset(key, "status", status)
     if extra:
         await redis_client.hset(key, mapping=extra)
@@ -126,7 +127,7 @@ def watch_docker_events():
             continue
 
         yield {
-            "student_id": parsed["student_id"],
+            "room_id": parsed["room_id"],
             "lab_id": parsed["lab_id"],
             "event_type": event_type,
             "container_name": container_name,
@@ -195,24 +196,24 @@ async def main():
 async def handle_event(channel, redis_client, event: dict, status_map: dict):
     """Handle a single Docker event: update Redis and publish to RabbitMQ."""
     try:
-        student_id = event["student_id"]
+        room_id = event["room_id"]
         lab_id = event["lab_id"]
         event_type = event["event_type"]
 
         # Update Redis status or remove key
         new_status = status_map.get(event_type, "unknown")
-        key = f"container:{student_id}:{lab_id}"
+        key = f"container:room:{room_id}:{lab_id}"
         
         if event_type in ("container.stop", "container.die", "container.destroy", "container.kill"):
             await redis_client.delete(key)
         elif event_type != "container.exec":  # exec doesn't change status
-            await update_redis_status(redis_client, student_id, lab_id, new_status)
+            await update_redis_status(redis_client, room_id, lab_id, new_status)
 
         # Publish to RabbitMQ
         await publish_event(channel, event)
 
         logger.info(
-            f"Event: {event_type} | student={student_id} lab={lab_id} | status→{new_status}"
+            f"Event: {event_type} | room={room_id} lab={lab_id} | status→{new_status}"
         )
     except Exception as exc:
         logger.error(f"Error handling event: {exc}")

@@ -32,4 +32,12 @@ celery_app.conf.update(
 
     # Results
     result_expires=3600,
+
+    # Beat Schedule (ТЗ: Garbage Collection for idle labs)
+    beat_schedule={
+        "reap-idle-containers": {
+            "task": "app.worker.tasks.reap_idle_containers",
+            "schedule": 60.0,
+        }
+    },
 )

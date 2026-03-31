@@ -27,23 +27,27 @@ function setupTerminalProxy(server) {
 
         if (!match) return; // Not a terminal request — skip
 
-        const studentId = parseInt(match[1]);
+        const roomId = parseInt(match[1]);
         const labId = parseInt(match[2]);
         const ticket = url.searchParams.get('ticket');
 
         wss.handleUpgrade(req, socket, head, (ws) => {
-            handleTerminalConnection(ws, studentId, labId, ticket);
+            handleTerminalConnection(ws, roomId, labId, ticket);
         });
     });
 
     return wss;
 }
 
-async function waitForContainer(studentId, labId, maxWait = 15000, interval = 1000) {
+// Map to store shared ttyd upstream connections per room
+const roomUpstreams = new Map();
+
+
+async function waitForContainer(roomId, labId, maxWait = 15000, interval = 1000) {
     /** Poll Redis until container is running or timeout */
     const startTime = Date.now();
     while (Date.now() - startTime < maxWait) {
-        const container = await getContainerInfo(studentId, labId);
+        const container = await getContainerInfo(roomId, labId);
         if (container && container.status === 'running' && container.port) {
             return container;
         }
@@ -52,111 +56,113 @@ async function waitForContainer(studentId, labId, maxWait = 15000, interval = 10
     return null;
 }
 
-async function handleTerminalConnection(ws, studentId, labId, ticket) {
+async function handleTerminalConnection(ws, roomId, labId, ticket) {
     // 1. Validate ticket
     const auth = await validateTicket(ticket);
-    if (!auth || auth.studentId !== studentId || auth.labId !== labId) {
+    if (!auth || auth.roomId !== roomId || auth.labId !== labId) {
         ws.close(4001, 'Invalid or expired ticket');
         return;
     }
 
-    // 2. Wait for container to be running (poll Redis)
-    console.log(`[Terminal] Waiting for container: student=${studentId} lab=${labId}`);
-    const container = await waitForContainer(studentId, labId);
+    // 2. Wait for container to be running 
+    console.log(`[Terminal] Waiting for container: room=${roomId} lab=${labId}`);
+    const container = await waitForContainer(roomId, labId);
     if (!container) {
         ws.close(4002, 'Container not running (timeout)');
         return;
     }
 
-    // 3. Connect to ttyd inside the container
-    const ttydUrl = `ws://host.docker.internal:${container.port}/ws`;
-    let upstream;
+    const roomKey = `${roomId}:${labId}`;
+    let upstreamInfo = roomUpstreams.get(roomKey);
 
-    try {
-        // libwebsockets (ttyd) REQUIRES the 'tty' subprotocol, otherwise it accepts but ignores the connection
-        upstream = new WebSocket(ttydUrl, ['tty']);
-    } catch (err) {
-        console.error(`[Terminal] Failed to connect to ttyd at ${ttydUrl}:`, err.message);
-        ws.close(4003, 'Cannot connect to container terminal');
-        return;
+    if (!upstreamInfo) {
+        // Connect to ttyd inside the container
+        const ttydUrl = `ws://host.docker.internal:${container.port}/ws`;
+        let upstream;
+
+        try {
+            upstream = new WebSocket(ttydUrl, ['tty']);
+        } catch (err) {
+            console.error(`[Terminal] Failed to connect to ttyd at ${ttydUrl}:`, err.message);
+            ws.close(4003, 'Cannot connect to container terminal');
+            return;
+        }
+
+        upstreamInfo = {
+            upstream,
+            clients: new Set(),
+            ready: false,
+        };
+        roomUpstreams.set(roomKey, upstreamInfo);
+
+        // Wait for upstream to actually open
+        try {
+            await new Promise((resolve, reject) => {
+                upstream.on('open', () => {
+                    console.log(`[Terminal] Connected to ttyd: room=${roomId} lab=${labId} port=${container.port}`);
+                    upstream.send(JSON.stringify({ AuthToken: "" }));
+                    upstream.send('1' + JSON.stringify({ columns: 120, rows: 30 }));
+                    upstreamInfo.ready = true;
+                    resolve();
+                });
+                upstream.on('error', reject);
+                setTimeout(() => reject(new Error('ttyd connection timeout')), 5000);
+            });
+        } catch (err) {
+            console.error(`[Terminal] ttyd connection failed:`, err.message);
+            roomUpstreams.delete(roomKey);
+            ws.close(4003, 'Cannot connect to container terminal');
+            return;
+        }
+
+        // Handle ttyd messages -> broadcast to all clients
+        upstream.on('message', (data) => {
+            // data is usually a Buffer from 'ws'
+            if (data.length > 0 && data[0] === 0x30) { // ASCII '0' is 48 (0x30)
+                const payload = data.subarray(1);
+                for (const client of upstreamInfo.clients) {
+                    if (client.readyState === WebSocket.OPEN) {
+                        client.send(payload);
+                    }
+                }
+            }
+        });
+
+        upstream.on('close', () => {
+            console.log(`[Terminal] Upstream closed: room=${roomId} lab=${labId}`);
+            for (const client of upstreamInfo.clients) {
+                if (client.readyState === WebSocket.OPEN) {
+                    client.close(4004, 'Container terminal closed');
+                }
+            }
+            roomUpstreams.delete(roomKey);
+        });
+
+        upstream.on('error', (err) => {
+            console.error(`[Terminal] Upstream error: ${err.message}`);
+            roomUpstreams.delete(roomKey);
+        });
     }
 
-    // Wait for upstream to actually open
-    await new Promise((resolve, reject) => {
-        upstream.on('open', () => {
-            console.log(`[Terminal] Connected to ttyd: student=${studentId} lab=${labId} port=${container.port}`);
-            // ttyd protocol requires an initial AuthToken message to initialize the session
-            upstream.send(JSON.stringify({ AuthToken: "" }));
+    // Add this WS client to the room
+    upstreamInfo.clients.add(ws);
 
-            // ttyd ALSO requires a Window Size message ('1' + JSON) to allocate the PTY and start bash
-            upstream.send('1' + JSON.stringify({ columns: 120, rows: 30 }));
-
-            resolve();
-        });
-        upstream.on('error', (err) => {
-            reject(err);
-        });
-        setTimeout(() => reject(new Error('ttyd connection timeout')), 5000);
-    }).catch((err) => {
-        console.error(`[Terminal] ttyd connection failed:`, err.message);
-        ws.close(4003, 'Cannot connect to container terminal');
-        return;
-    });
-
-    if (upstream.readyState !== WebSocket.OPEN) return;
-
-    // 4. Proxy data with ttyd protocol handling
-
-    // Browser sends raw text → prepend ttyd input prefix '0' → forward to ttyd
+    // Browser sends raw text/binary → prepend ttyd input prefix '0' (0x30) → forward to ttyd
     ws.on('message', (data) => {
-        if (upstream.readyState === WebSocket.OPEN) {
-            // Convert data to string (utf8) and prepend '0'
-            const textData = data.toString('utf8');
-            console.log(`[Terminal DEBUG] Browser -> ttyd: ${textData.substring(0, 100).replace(/\n/g, '\\n')}`);
-            upstream.send('0' + textData);
-        }
-    });
-
-    // ttyd sends prefixed messages → strip prefix → forward to browser
-    upstream.on('message', (data) => {
-        if (ws.readyState === WebSocket.OPEN) {
-            // ttyd sends text frames like "0\x1b[32mhello..."
-            const str = data.toString('utf8');
-            console.log(`[Terminal DEBUG] ttyd -> Browser: length=${str.length}, prefix='${str[0]}', preview='${str.substring(1, 50).replace(/\n/g, '\\n')}'`);
-            if (str.length > 0) {
-                const msgType = str[0];
-                if (msgType === '0') {
-                    // Output data — send actual content to browser
-                    ws.send(str.slice(1));
-                }
-                // Ignore other ttyd message types (title, prefs)
-            }
+        if (upstreamInfo && upstreamInfo.ready && upstreamInfo.upstream.readyState === WebSocket.OPEN) {
+            // Buffer.concat ([prefix '0', original data])
+            const prefix = Buffer.from([0x30]);
+            const msg = Buffer.concat([prefix, Buffer.isBuffer(data) ? data : Buffer.from(data)]);
+            upstreamInfo.upstream.send(msg);
         }
     });
 
     // Handle disconnect
     ws.on('close', () => {
-        console.log(`[Terminal] Browser disconnected: student=${studentId} lab=${labId}`);
-        if (upstream.readyState === WebSocket.OPEN) {
-            upstream.close();
-        }
-        // NOTE: Do NOT stop the container on terminal disconnect.
-        // The container stays alive until:
-        // 1) Session timeout (TTL in Redis)
-        // 2) Student explicitly closes the lab
-        // 3) Teacher stops it from dashboard
-    });
-
-    upstream.on('close', () => {
-        if (ws.readyState === WebSocket.OPEN) {
-            ws.close(4004, 'Container terminal closed');
-        }
-    });
-
-    upstream.on('error', (err) => {
-        console.error(`[Terminal] Upstream error: ${err.message}`);
-        if (ws.readyState === WebSocket.OPEN) {
-            ws.close(4003, 'Container terminal error');
+        console.log(`[Terminal] Browser disconnected: room=${roomId} lab=${labId}`);
+        if (upstreamInfo) {
+            upstreamInfo.clients.delete(ws);
+            // Optional: close upstream if no clients left
         }
     });
 

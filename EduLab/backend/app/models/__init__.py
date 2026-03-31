@@ -2,3 +2,6 @@
 from app.models.user import Group, User, UserRole  # noqa: F401
 from app.models.lab import Lab  # noqa: F401
 from app.models.result import ContainerSession, LabResult  # noqa: F401
+from app.models.room import Room, RoomParticipant
+from app.models.achievement import Achievement, UserAchievement  # noqa: F401
+

@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { getMe, getAllContainers, getGroupStudents, isAuthenticated } from '@/lib/api';
+import { getMe, getAllContainers, getGroupStudents, getTeacherGroups, isAuthenticated } from '@/lib/api';
 
 interface Container {
     student_id: number;
@@ -38,47 +38,75 @@ export default function DashboardPage() {
     const [user, setUser] = useState<User | null>(null);
     const [containers, setContainers] = useState<Container[]>([]);
     const [students, setStudents] = useState<Student[]>([]);
+    const [groups, setGroups] = useState<{ id: number, name: string, year: number }[]>([]);
+    const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
     const [groupName, setGroupName] = useState('');
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
 
+    // Initial load: User + Groups
     useEffect(() => {
         if (!isAuthenticated()) {
             router.replace('/login');
             return;
         }
-        loadData();
-        // Auto-refresh every 10 seconds (ТЗ §4)
-        const interval = setInterval(() => loadData(true), 10000);
-        return () => clearInterval(interval);
+
+        async function initDashboard() {
+            setLoading(true);
+            try {
+                const [userData, groupsData] = await Promise.all([
+                    getMe(),
+                    getTeacherGroups().catch(() => ({ groups: [] })),
+                ]);
+
+                if (userData.role !== 'teacher' && userData.role !== 'admin') {
+                    router.replace('/labs');
+                    return;
+                }
+
+                setUser(userData);
+                const fetchedGroups = groupsData.groups || [];
+                setGroups(fetchedGroups);
+                if (fetchedGroups.length > 0) {
+                    setSelectedGroupId(fetchedGroups[0].id);
+                }
+            } catch {
+                router.replace('/login');
+            } finally {
+                setLoading(false);
+            }
+        }
+
+        initDashboard();
     }, [router]);
 
-    async function loadData(silent = false) {
-        if (!silent) setLoading(true);
-        else setRefreshing(true);
-        try {
-            const [userData, containersData, groupData] = await Promise.all([
-                getMe(),
-                getAllContainers(),
-                getGroupStudents(1).catch(() => ({ group: { name: '' }, students: [] })),
-            ]);
+    // Live data polling: Containers + Students of selected group
+    useEffect(() => {
+        if (selectedGroupId === null) return;
 
-            if (userData.role !== 'teacher' && userData.role !== 'admin') {
-                router.replace('/labs');
-                return;
+        async function loadLiveData(silent = false) {
+            if (silent) setRefreshing(true);
+            try {
+                const [containersData, groupData] = await Promise.all([
+                    getAllContainers(),
+                    getGroupStudents(selectedGroupId).catch(() => ({ group: { name: '' }, students: [] })),
+                ]);
+
+                setContainers(containersData.containers || []);
+                setStudents(groupData.students || []);
+                setGroupName(groupData.group?.name || '');
+            } catch (err) {
+                console.error(err);
+            } finally {
+                setRefreshing(false);
             }
-
-            setUser(userData);
-            setContainers(containersData.containers || []);
-            setStudents(groupData.students || []);
-            setGroupName(groupData.group?.name || 'Все группы');
-        } catch {
-            router.replace('/login');
-        } finally {
-            setLoading(false);
-            setRefreshing(false);
         }
-    }
+
+        loadLiveData();
+        const interval = setInterval(() => loadLiveData(true), 10000);
+        return () => clearInterval(interval);
+
+    }, [selectedGroupId]);
 
     if (loading) {
         return (
@@ -150,9 +178,23 @@ export default function DashboardPage() {
 
                 {/* Students */}
                 <div>
-                    <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>
-                        👥 Студенты — {groupName}
-                    </h2>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+                        <h2 style={{ fontSize: 18, fontWeight: 600 }}>
+                            👥 Студенты {groupName ? `— ${groupName}` : ''}
+                        </h2>
+                        {groups.length > 0 && (
+                            <select
+                                className="input"
+                                style={{ width: 'auto', padding: '6px 12px', height: 36 }}
+                                value={selectedGroupId || ''}
+                                onChange={(e) => setSelectedGroupId(Number(e.target.value))}
+                            >
+                                {groups.map(g => (
+                                    <option key={g.id} value={g.id}>{g.name} ({g.year})</option>
+                                ))}
+                            </select>
+                        )}
+                    </div>
                     {students.length === 0 ? (
                         <div style={{ color: 'var(--text-muted)', padding: '24px 0' }}>
                             Нет студентов в группе

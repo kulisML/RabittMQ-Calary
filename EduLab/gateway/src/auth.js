@@ -19,8 +19,15 @@ async function validateTicket(ticket) {
 
     const key = `ws_ticket:${ticket}`;
     const data = await redis.hgetall(key);
+    if (!data || Object.keys(data).length === 0) {
+        console.warn(`[Auth] Ticket not found or expired: ${ticket}`);
+        return null;
+    }
 
-    if (!data || !data.student_id) return null;
+    if (!data.student_id) {
+        console.warn(`[Auth] Ticket data missing student_id for ticket: ${ticket}`);
+        return null;
+    }
 
     // Delete ticket (one-time use)
     await redis.del(key);
@@ -28,14 +35,16 @@ async function validateTicket(ticket) {
     return {
         studentId: parseInt(data.student_id),
         labId: parseInt(data.lab_id),
+        roomId: parseInt(data.room_id || 0),
     };
 }
 
+
 /**
- * Get container info from Redis (ТЗ §9.2).
+ * Get container info from Redis.
  */
-async function getContainerInfo(studentId, labId) {
-    const key = `container:${studentId}:${labId}`;
+async function getContainerInfo(roomId, labId) {
+    const key = `container:room:${roomId}:${labId}`;
     const data = await redis.hgetall(key);
     if (!data || !data.status) return null;
     return {
@@ -45,11 +54,12 @@ async function getContainerInfo(studentId, labId) {
     };
 }
 
+
 /**
- * Increment run stats in Redis (ТЗ §9.2).
+ * Increment run stats in Redis.
  */
-async function incrementRunStats(studentId, labId, isError = false) {
-    const key = `stats:${studentId}:${labId}`;
+async function incrementRunStats(roomId, labId, isError = false) {
+    const key = `stats:room:${roomId}:${labId}`;
     await redis.hincrby(key, 'runs_count', 1);
     if (isError) {
         await redis.hincrby(key, 'errors_count', 1);

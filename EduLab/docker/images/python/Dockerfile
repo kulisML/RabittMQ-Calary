@@ -39,4 +39,4 @@ WORKDIR /workspace
 EXPOSE 7681
 
 # Start ttyd attached to a tmux session (shared between student and teacher)
-ENTRYPOINT ["ttyd", "--writable", "--port", "7681", "tmux", "new", "-A", "-s", "shared", "bash"]
+ENTRYPOINT ["ttyd", "--writable", "--interface", "0.0.0.0", "--port", "7681", "tmux", "new", "-A", "-s", "shared", "bash"]

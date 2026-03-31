@@ -1,6 +1,6 @@
 import '@/styles/globals.css';
 import type { Metadata } from 'next';
-
+import { GamificationProvider } from '@/lib/GamificationContext';
 export const metadata: Metadata = {
     title: 'EduLab — Лабораторные работы',
     description: 'Платформа для проведения лабораторных работ по программированию в изолированных контейнерах',
@@ -15,7 +15,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     rel="stylesheet"
                 />
             </head>
-            <body>{children}</body>
+            <body>
+                <GamificationProvider>
+                    {children}
+                </GamificationProvider>
+            </body>
         </html>
     );
 }

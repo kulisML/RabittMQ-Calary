@@ -9,10 +9,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.auth import router as auth_router
 from app.api.labs import router as labs_router
 from app.api.dashboard import router as dashboard_router
+from app.api.rooms import router as rooms_router
+from app.api.ai import router as ai_router
+from app.api.gamification import router as gamification_router
 from app.services import lab_service, rabbitmq_service
 
+
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.INFO, 
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -94,6 +99,11 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(labs_router)
 app.include_router(dashboard_router)  # Этап 2
+app.include_router(rooms_router)
+app.include_router(ai_router)
+app.include_router(gamification_router)
+
+
 
 
 @app.get("/health")

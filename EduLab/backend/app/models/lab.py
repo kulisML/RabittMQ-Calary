@@ -20,3 +20,5 @@ class Lab(Base):
     # Relationships
     results = relationship("LabResult", back_populates="lab")
     container_sessions = relationship("ContainerSession", back_populates="lab")
+    rooms = relationship("Room", back_populates="lab")
+

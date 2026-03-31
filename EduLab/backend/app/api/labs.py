@@ -10,6 +10,7 @@ from app.models.user import User
 from app.schemas.lab import LabCreateRequest, LabDetail, LabOpenResponse, LabOut
 from app.services import lab_service
 from app.models.lab import Lab
+from app.worker.tasks import stop_container
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/labs", tags=["labs"])
@@ -41,35 +42,18 @@ async def get_lab(
     return lab
 
 
-@router.post("/{lab_id}/open", response_model=LabOpenResponse)
+@router.post("/{lab_id}/open")
 async def open_lab(
     lab_id: int,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """POST /labs/{lab_id}/open — открыть лабу, поднять контейнер (ТЗ §8.2).
-
-    Flow (ТЗ §3.2):
-    1. Проверяем, есть ли уже контейнер для этого студента
-    2. Если нет — публикуем container.start в RabbitMQ
-    3. Container Manager получает событие, запускает Docker-контейнер
-    4. Возвращаем ws_ticket для подключения через WebSocket
-    """
-    lab = await lab_service.get_lab_detail(db, lab_id)
-    if lab is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Лабораторная работа не найдена",
-        )
-
-    result = await lab_service.open_lab(db, user, lab)
-
-    return LabOpenResponse(
-        container_id=result["container_id"],
-        port=result["port"],
-        status=result["status"],
-        ws_ticket=result["ws_ticket"],
+    """POST /labs/{lab_id}/open — deprecated (ТЗ §8.2)."""
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Use /rooms/{room_id}/open to start a lab",
     )
+
 
 
 @router.post("", response_model=LabDetail)
@@ -99,3 +83,22 @@ async def create_lab(
 
     logger.info(f"Lab created: {lab.title} by {user.email}")
     return lab
+
+
+@router.post("/{lab_id}/ping")
+async def ping_lab(
+    lab_id: int,
+    user: User = Depends(get_current_user),
+):
+    """POST /labs/{lab_id}/ping — deprecated."""
+    return {"status": "deprecated", "detail": "Use /rooms/{room_id}/ping"}
+
+
+@router.post("/{lab_id}/stop")
+async def stop_lab_endpoint(
+    lab_id: int,
+    user: User = Depends(get_current_user),
+):
+    """POST /labs/{lab_id}/stop — deprecated."""
+    return {"status": "deprecated", "detail": "Use /rooms/{room_id}/stop"}
+

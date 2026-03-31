@@ -72,6 +72,22 @@ export default function LabsPage() {
                     <span style={{ color: 'var(--accent)' }}>Edu</span>Lab
                 </div>
                 <div className="navbar-user">
+                    {(user?.role === 'teacher' || user?.role === 'admin') && (
+                        <button
+                            className="btn btn-ghost"
+                            onClick={() => router.push('/dashboard')}
+                            style={{ padding: '6px 12px', fontSize: '13px', marginRight: '8px' }}
+                        >
+                            👨‍🏫 Дашборд
+                        </button>
+                    )}
+                    <button
+                        className="btn btn-primary"
+                        onClick={() => router.push('/dashboard/gamer')}
+                        style={{ padding: '6px 12px', fontSize: '13px', marginRight: '16px', borderRadius: '20px', background: 'linear-gradient(90deg, #3b82f6 0%, #8b5cf6 100%)', border: 'none' }}
+                    >
+                        🎮 Gamer Profile
+                    </button>
                     <span>{user?.name}</span>
                     <span style={{ color: 'var(--text-muted)' }}>({user?.role})</span>
                     <button className="btn btn-ghost" onClick={handleLogout} style={{ padding: '6px 12px', fontSize: '13px' }}>

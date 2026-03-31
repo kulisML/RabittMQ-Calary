@@ -37,9 +37,16 @@ class User(Base):
     password_hash = Column(String(200), nullable=False)
     role = Column(Enum(UserRole), nullable=False, default=UserRole.student)
     group_id = Column(Integer, ForeignKey("groups.id"), nullable=True)
+    
+    # Gamification
+    xp = Column(Integer, nullable=False, default=0)
+    level = Column(Integer, nullable=False, default=1)
 
     # Relationships
     group = relationship("Group", back_populates="students", foreign_keys=[group_id])
     taught_groups = relationship("Group", back_populates="teacher", foreign_keys="[Group.teacher_id]")
     lab_results = relationship("LabResult", back_populates="student")
-    container_sessions = relationship("ContainerSession", back_populates="student")
+    room_participations = relationship("RoomParticipant", back_populates="user")
+    achievements = relationship("UserAchievement", back_populates="user")
+
+

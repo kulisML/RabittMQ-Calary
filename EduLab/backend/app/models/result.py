@@ -26,11 +26,11 @@ class LabResult(Base):
 
 
 class ContainerSession(Base):
-    """Сессия работы студента в контейнере."""
+    """Сессия работы в контейнере (привязана к комнате)."""
     __tablename__ = "container_sessions"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    room_id = Column(Integer, ForeignKey("rooms.id"), nullable=False, index=True)
     lab_id = Column(Integer, ForeignKey("labs.id"), nullable=False, index=True)
     container_id = Column(String(100), nullable=True)
     started_at = Column(
@@ -40,5 +40,5 @@ class ContainerSession(Base):
     total_runs = Column(Integer, nullable=False, default=0)
 
     # Relationships
-    student = relationship("User", back_populates="container_sessions")
+    room = relationship("Room", back_populates="container_sessions")
     lab = relationship("Lab", back_populates="container_sessions")

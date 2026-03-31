@@ -5,13 +5,13 @@
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001';
 
 export function connectTerminal(
-    studentId: number,
+    roomId: number,
     labId: number,
     ticket: string,
     onData: (data: ArrayBuffer | string) => void,
     onClose: () => void,
 ): WebSocket {
-    const url = `${WS_URL}/ws/terminal/${studentId}/${labId}?ticket=${ticket}`;
+    const url = `${WS_URL}/ws/terminal/${roomId}/${labId}?ticket=${ticket}`;
     const ws = new WebSocket(url);
 
     ws.binaryType = 'arraybuffer';

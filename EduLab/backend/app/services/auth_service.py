@@ -10,12 +10,20 @@ async def authenticate_user(
     db: AsyncSession, email: str, password: str
 ) -> User | None:
     """Verify user credentials. Returns User or None."""
+    import logging
+    logger = logging.getLogger("auth_service")
+
     result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if user is None:
+        logger.warning(f"Login failed: User {email} not found")
         return None
+    
     if not verify_password(password, user.password_hash):
+        logger.warning(f"Login failed: Password mismatch for user {email}")
         return None
+    
+    logger.info(f"Successful login: {email}")
     return user
 
 

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.lab import Lab
 from app.models.result import ContainerSession, LabResult
+from app.models.room import Room
 from app.models.user import User
 
 # Redis client (initialized on app startup)
@@ -75,24 +76,24 @@ async def get_lab_detail(db: AsyncSession, lab_id: int) -> Lab | None:
     return result.scalar_one_or_none()
 
 
-async def open_lab(
-    db: AsyncSession, student: User, lab: Lab
+async def open_room_lab(
+    db: AsyncSession, room: Room, student: User, lab: Lab
 ) -> dict:
-    """Open a lab — send Celery task to start container (ТЗ §3.2).
+    """Open a lab for a room — send Celery task to start container.
 
-    1. Check if container already exists in Redis
+    1. Check if container already exists in Redis for this room
     2. If not — send Celery task container.start
     3. Write "starting" to Redis immediately
     4. Generate WS ticket
     5. Return connection info
     """
-    container_key = f"container:{student.id}:{lab.id}"
+    container_key = f"container:room:{room.id}:{lab.id}"
 
     # Check if container already running or starting
     existing = await redis_client.hgetall(container_key) if redis_client else {}
     if existing and existing.get("status") in ("running", "starting"):
         # Container already exists — generate new ticket and return
-        ws_ticket = await _generate_ws_ticket(student.id, lab.id)
+        ws_ticket = await _generate_ws_ticket(student.id, lab.id, room.id)
         return {
             "container_id": existing.get("container_id", "pending"),
             "port": int(existing.get("port", "0")),
@@ -109,11 +110,11 @@ async def open_lab(
     }
     image = image_map.get(lab.language, settings.DEFAULT_PYTHON_IMAGE)
 
-    # Send Celery task to start container (CRITICAL: use send_task, NOT raw publish)
+    # Send Celery task to start container 
     celery_app.send_task(
         "app.worker.tasks.start_container",
         kwargs={
-            "student_id": student.id,
+            "room_id": room.id,
             "lab_id": lab.id,
             "language": lab.language,
             "image": image,
@@ -134,14 +135,14 @@ async def open_lab(
 
     # Record session in DB
     session = ContainerSession(
-        student_id=student.id,
+        room_id=room.id,
         lab_id=lab.id,
     )
     db.add(session)
     await db.flush()
 
     # Generate WS ticket for browser connection
-    ws_ticket = await _generate_ws_ticket(student.id, lab.id)
+    ws_ticket = await _generate_ws_ticket(student.id, lab.id, room.id)
 
     # Update online set (ТЗ §9.2)
     if student.group_id and redis_client:
@@ -155,7 +156,8 @@ async def open_lab(
     }
 
 
-async def _generate_ws_ticket(student_id: int, lab_id: int) -> str:
+
+async def _generate_ws_ticket(student_id: int, lab_id: int, room_id: int) -> str:
     """Generate a one-time WebSocket ticket (TTL 120 sec, stored in Redis)."""
     ticket = secrets.token_urlsafe(32)
     ticket_key = f"ws_ticket:{ticket}"
@@ -164,16 +166,18 @@ async def _generate_ws_ticket(student_id: int, lab_id: int) -> str:
         await redis_client.hset(ticket_key, mapping={
             "student_id": str(student_id),
             "lab_id": str(lab_id),
+            "room_id": str(room_id),
         })
         await redis_client.expire(ticket_key, 120)  # 120 seconds TTL
 
     return ticket
 
 
-async def get_container_info(student_id: int, lab_id: int) -> dict | None:
-    """Get container info from Redis (ТЗ §9.2)."""
+
+async def get_container_info(room_id: int, lab_id: int) -> dict | None:
+    """Get container info from Redis."""
     if not redis_client:
         return None
-    container_key = f"container:{student_id}:{lab_id}"
+    container_key = f"container:room:{room_id}:{lab_id}"
     data = await redis_client.hgetall(container_key)
     return data if data else None
